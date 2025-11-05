@@ -51,9 +51,11 @@ mapa_depara = {
     'DESCR_PERIODO': 'DESC_PERIODO'
 }
  
-# no arquivo de 2023 tem uma aba que é um dicionário de dados e precisa ser ignorada.
-arquivo_com_aba_ignorar = "SPDadosCriminais_2023"
-aba_para_ignorar = "CAMPOS_DA_TABELA_SPDADOS"
+# no arquivo de 2023 e 2025 que precisam ser ignorados pois são dicionários de dados nos arquivos de excel.
+DICIONARIO_IGNORAR = {
+    "2023": "CAMPOS_DA_TABELA_SPDADOS",
+    "2025": "Campos da Tabela_SPDADOS"
+}
 
 
 print("Iniciando processo de Extração e Transformação (E/T)...")
@@ -63,36 +65,51 @@ for url in lista_urls:
     print(f"\nProcessando arquivo: {url}")
     
     try:
-        # nome do arquivo da URL para usar nos filtros
         nome_arquivo = url.split('/')[-1]
-
         response = requests.get(url)
-        response.raise_for_status()
-        
-        arquivo_em_memoria = io.BytesIO(response.content)
-        
+        response.raise_for_status()        
+        arquivo_em_memoria = io.BytesIO(response.content)        
         print(f"  -> Lendo abas do arquivo...")
+        
         dicionario_de_abas = pd.read_excel(arquivo_em_memoria, sheet_name=None)
         print(f"  -> Encontradas {len(dicionario_de_abas)} abas.")
 
         for nome_aba, df_aba in dicionario_de_abas.items():
             
-            # ignora aba de 2023
-            if arquivo_com_aba_ignorar in nome_arquivo and nome_aba == aba_para_ignorar:
-                continue # Pula para a próxima aba
+            # ignorando abas que não contem dados utilizáveis
+            ignorar_esta_aba = False
+            for chave_arquivo, chave_aba in DICIONARIO_IGNORAR.items():
+                if chave_arquivo in nome_arquivo and nome_aba == chave_aba:
+                        print(f"    -> [ignorando abas dicionário de dados] Aba: {nome_aba}")
+                        ignorar_esta_aba = True # Ativa a "flag"
+                        break
+            if ignorar_esta_aba:
+                continue
 
             # depara de colunas arquivo de 2022
             if arquivo_com_depara in nome_arquivo:
                 print(f"    -> [aplicando depara 2022] Aba: {nome_aba}")
                 df_aba.rename(columns=mapa_depara, inplace=True)
-            
             print(f"    -> [processando] Aba: {nome_aba}")
+
+            # padronizando nome de colunas com caracteres especiais
+
             lista_dataframes_final.append(df_aba)
+            df_aba.columns = (
+                df_aba.columns
+                .str.normalize('NFKD')
+                .str.encode('ascii', errors='ignore')
+                .str.decode('utf-8')
+                .str.replace(' ', '_')
+                .str.replace('-', '_')
+                .str.replace(r'[^0-9a-zA-Z_]', '', regex=True)
+                .str.lower()
+            )
 
     except Exception as e:
         print(f"Falha ao processar a URL {url}. Erro: {e}")
 
-print("\n...Processo de E/T concluído.")
+print("\n Processo de E/T concluído.")
 
 
 # unificando arquivos
@@ -108,18 +125,6 @@ else:
     print("\nNenhum dado para carregar. O script será encerrado.")
     exit()
 
-# normalizando nome das colunas
-
-df_unificado.columns = (
-    df_unificado.columns
-    .str.normalize('NFKD')
-    .str.encode('ascii', errors='ignore')
-    .str.decode('utf-8')
-    .str.replace(' ', '_')
-    .str.replace('-', '_')
-    .str.replace(r'[^0-9a-zA-Z_]', '', regex=True)
-    .str.lower()
-)
 
 # carregando dados no banco
 if df_unificado is not None:
