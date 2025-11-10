@@ -1,18 +1,13 @@
 import os
 import pandas as pd
 import time
-import os
 import requests
 import io
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
-print("Iniciando o script de carga de dados...")
-
-# credenciais do banco salvas arquivo .env.
-
+# credenciais de banco, lista de links de acesso as bases, depara de colunas e abas a ignorar
 load_dotenv()
-
 db_user = os.getenv("DB_USER")
 db_password = os.getenv("DB_PASSWORD")
 db_host = os.getenv("DB_HOST")
@@ -20,82 +15,68 @@ db_port = os.getenv("DB_PORT")
 db_name = os.getenv("DB_NAME")
 db_table = os.getenv("DB_TABLE")
 
-
-try:
-    connection_string = f"mysql+mysqlconnector://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-    engine = create_engine(connection_string)
-    with engine.connect() as connection:
-        pass
-    print("Conexão com o banco de dados foi bem-sucedida.")
-except Exception as e:
-    print(f"Falha ao conectar ao banco de dados: {e}")
-    exit()
-
-
-# url de dados a serem extraidos
-
-lista_urls = [
+LISTA_URLS = [
     "https://www.ssp.sp.gov.br/assets/estatistica/transparencia/spDados/SPDadosCriminais_2022.xlsx",
     "https://www.ssp.sp.gov.br/assets/estatistica/transparencia/spDados/SPDadosCriminais_2023.xlsx",
     "https://www.ssp.sp.gov.br/assets/estatistica/transparencia/spDados/SPDadosCriminais_2024.xlsx",
     "https://www.ssp.sp.gov.br/assets/estatistica/transparencia/spDados/SPDadosCriminais_2025.xlsx"
 ]
-
-# transformação prévia de dados (4 colunas de 2022 não seguem o padrão dos demais anos, esse trecho padroniza esse atributos)
-
-arquivo_com_depara = "SPDadosCriminais_2022"
-mapa_depara = {
+MAPA_DEPARA_2022 = {
     'DATA_COMUNICACAO_BO': 'DATA_REGISTRO',
     'CIDADE': 'NOME_MUNICIPIO',
     'DESCR_TIPOLOCAL': 'DESCR_SUBTIPOLOCAL',
     'DESCR_PERIODO': 'DESC_PERIODO'
 }
- 
-# no arquivo de 2023 e 2025 que precisam ser ignorados pois são dicionários de dados nos arquivos de excel.
 DICIONARIO_IGNORAR = {
     "2023": "CAMPOS_DA_TABELA_SPDADOS",
     "2025": "Campos da Tabela_SPDADOS"
 }
 
 
-print("Iniciando processo de Extração e Transformação (E/T)...")
-lista_dataframes_final = []
+# conexão com banco de dados
+def criar_engine_banco():
 
-for url in lista_urls:
-    print(f"\nProcessando arquivo: {url}")
-    
     try:
-        nome_arquivo = url.split('/')[-1]
-        response = requests.get(url)
-        response.raise_for_status()        
-        arquivo_em_memoria = io.BytesIO(response.content)        
-        print(f"  -> Lendo abas do arquivo...")
-        
-        dicionario_de_abas = pd.read_excel(arquivo_em_memoria, sheet_name=None)
-        print(f"  -> Encontradas {len(dicionario_de_abas)} abas.")
+        connection_string = f"mysql+mysqlconnector://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+        engine = create_engine(connection_string)
+        with engine.connect() as connection:
+            pass
+        print("A conexão foi feita com o banco de dados.")
+        return engine
+    except Exception as e:
+        print(f"Falha ao conectar ao banco de dados: {e}")
+        return None
 
-        for nome_aba, df_aba in dicionario_de_abas.items():
+# Extração e trabsformação
+
+def extrair_e_transformar(urls, mapa_depara, dic_ignorar):
+    
+    print("Iniciando e/t")
+    lista_dataframes_final = []
+
+    for url in urls:
+        print(f"\nProcessando arquivo: {url}")
+        try:
+            nome_arquivo = url.split('/')[-1]
+            response = requests.get(url)
+            response.raise_for_status()        
+            arquivo_em_memoria = io.BytesIO(response.content)        
+            dicionario_de_abas = pd.read_excel(arquivo_em_memoria, sheet_name=None)
             
-            # ignorando abas que não contem dados utilizáveis
-            ignorar_esta_aba = False
-            for chave_arquivo, chave_aba in DICIONARIO_IGNORAR.items():
-                if chave_arquivo in nome_arquivo and nome_aba == chave_aba:
-                        print(f"    -> [ignorando abas dicionário de dados] Aba: {nome_aba}")
-                        ignorar_esta_aba = True # Ativa a "flag"
+            for nome_aba, df_aba in dicionario_de_abas.items():
+
+                ignorar_esta_aba = False
+                for chave_arquivo, chave_aba in dic_ignorar.items():
+                    if chave_arquivo in nome_arquivo and nome_aba == chave_aba:
+                        ignorar_esta_aba = True
                         break
-            if ignorar_esta_aba:
-                continue
+                if ignorar_esta_aba:
+                    continue
+                
+                if "2022" in nome_arquivo:
+                    df_aba.rename(columns=mapa_depara, inplace=True)
 
-            # depara de colunas arquivo de 2022
-            if arquivo_com_depara in nome_arquivo:
-                print(f"    -> [aplicando depara 2022] Aba: {nome_aba}")
-                df_aba.rename(columns=mapa_depara, inplace=True)
-            print(f"    -> [processando] Aba: {nome_aba}")
-
-            # padronizando nome de colunas com caracteres especiais
-
-            lista_dataframes_final.append(df_aba)
-            df_aba.columns = (
+                df_aba.columns = (
                 df_aba.columns
                 .str.normalize('NFKD')
                 .str.encode('ascii', errors='ignore')
@@ -106,46 +87,74 @@ for url in lista_urls:
                 .str.lower()
             )
 
-    except Exception as e:
-        print(f"Falha ao processar a URL {url}. Erro: {e}")
+                lista_dataframes_final.append(df_aba)
+                
+        except Exception as e:
+            print(f"Falha ao processar a URL {url}. Erro: {e}")
 
-print("\n Processo de E/T concluído.")
-
-
-# unificando arquivos
-df_unificado = None
-if lista_dataframes_final:
+    if not lista_dataframes_final:
+        print("\nNenhum dado para carregar.")
+        return None
+        
     try:
         print(f"\nUnificando {len(lista_dataframes_final)} planilhas...")
         df_unificado = pd.concat(lista_dataframes_final, ignore_index=True)
         print(f"DataFrame unificado com {df_unificado.shape[0]} linhas e {df_unificado.shape[1]} colunas.")
+        return df_unificado
     except Exception as e:
-        print(f"erro ao unificar os DataFrames: {e}")
-else:
-    print("\nNenhum dado para carregar. O script será encerrado.")
-    exit()
+        print(f"Erro ao unificar os DataFrames: {e}")
+        return None
 
+# carga de dados
+def carregar_dados(df_para_carregar, engine_conexao, nome_tabela):
 
-# carregando dados no banco
-if df_unificado is not None:
+    if df_para_carregar is None or engine_conexao is None:
+        print("Carga abortada por falta de dados ou conexão com banco.")
+        return
+
     try:
-        
         print("Iniciando a inserção dos dados no banco de dados...")
         start_time = time.time()
-        df_unificado.to_sql(
-            name=db_table,
-            con=engine,
+        
+        df_para_carregar.to_sql(
+            name=nome_tabela,
+            con=engine_conexao,
             if_exists='append',
             index=False,
             chunksize=1000
         )
        
         end_time = time.time()
-        tempo_total = end_time - start_time
-        
-        print("Todos os dados foram inseridos na tabela 'ocorrencias_sp_ssp'.")
-        print(f"Operação concluída em {tempo_total:.2f} segundos.")
+        print(f"Operação concluída em {end_time - start_time:.2f} segundos.")
         
     except Exception as e:
-        print("Ocorreu um erro durante a inserção no banco de dados.")
-        print(f"Erro: {e}")
+        print(f"Ocorreu um erro durante a inserção: {e}")
+
+
+#execução do etl
+def main():
+
+    print("iniciando etl")
+    
+
+    engine = criar_engine_banco()
+    
+    if engine:
+
+        df_final = extrair_e_transformar(
+            urls=LISTA_URLS, 
+            mapa_depara=MAPA_DEPARA_2022, 
+            dic_ignorar=DICIONARIO_IGNORAR
+        )
+        
+        if df_final is not None:
+            carregar_dados(
+                df_para_carregar=df_final, 
+                engine_conexao=engine, 
+                nome_tabela=os.getenv("DB_TABLE")
+            )
+            
+    print("etl finalizado")
+
+if __name__ == "__main__":
+    main()
